@@ -1,0 +1,448 @@
+// CivicTwin AI - Normalized Database Schema
+// Digital Public Infrastructure & Governance Intelligence Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 1. Users & Stakeholder Access
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  name         String
+  role         String        @default("ANALYST") // CITIZEN, ANALYST, ADMINISTRATOR, FIELD_OFFICER, COMMISSIONER
+  department   String?
+  apiKey       String?       @unique
+  passwordHash String?
+  isActive     Boolean       @default(true)
+  reviews      HumanReview[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@map("users")
+}
+
+// 2. Hierarchical Administrative Areas (India -> State -> District -> Block/Ward)
+model AdministrativeArea {
+  id           String               @id @default(uuid())
+  code         String               @unique // e.g., IN-KA-BLR-01
+  name         String
+  level        String               // COUNTRY, STATE, DISTRICT, BLOCK, WARD
+  parentId     String?
+  parent       AdministrativeArea?  @relation("AreaHierarchy", fields: [parentId], references: [id])
+  children     AdministrativeArea[] @relation("AreaHierarchy")
+  stateCode    String               // e.g., KA, MH, UP, OD
+  centerLat    Float
+  centerLng    Float
+  locations    Location[]
+  assets       InfrastructureAsset[]
+  demographics DemographicSnapshot[]
+  investments  PublicInvestment[]
+  hotspots     Hotspot[]
+  clusters     IssueCluster[]
+  assessments  PriorityAssessment[]
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@map("administrative_areas")
+}
+
+// 3. Canonical Geographic Locations
+model Location {
+  id                   String               @id @default(uuid())
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea   @relation(fields: [administrativeAreaId], references: [id])
+  address              String
+  latitude             Float
+  longitude            Float
+  landmark             String?
+  geojson              String?              // GeoJSON geometry string
+  citizenRequests      CitizenRequest[]
+  infrastructureAssets InfrastructureAsset[]
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@map("locations")
+}
+
+// 4. Ingested Citizen Requests
+model CitizenRequest {
+  id                   String        @id @default(uuid())
+  trackingCode         String        @unique // e.g., REQ-2026-001
+  originalText         String
+  language             String        // en, hi, bn, ta, te, mr
+  channel              String        @default("WEB") // WEB, VOICE, MESSAGING
+  locationId           String?
+  location             Location?     @relation(fields: [locationId], references: [id])
+  category             String        // Roads, Water, Sanitation, Electricity, Healthcare, etc.
+  subcategory          String?
+  summary              String?
+  requestedAction      String?
+  urgency              String        @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  affectedService      String?
+  status               String        @default("INGESTED") // INGESTED, NORMALIZED, CLUSTERED, ACTIONED
+  confidence           Float         @default(0.0)
+  requiresHumanReview  Boolean       @default(false)
+  mediaUrl             String?
+  issueClusterId       String?
+  issueCluster         IssueCluster? @relation(fields: [issueClusterId], references: [id])
+  aiAnalyses           AiAnalysis[]
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@index([status])
+  @@index([category])
+  @@index([language])
+  @@index([createdAt])
+  @@map("citizen_requests")
+}
+
+// 5. Structured AI Analyses (Gemini Inferences)
+model AiAnalysis {
+  id               String         @id @default(uuid())
+  citizenRequestId String
+  citizenRequest   CitizenRequest @relation(fields: [citizenRequestId], references: [id], onDelete: Cascade)
+  modelName        String         // gemini-2.0-flash, gemini-1.5-flash
+  rawPrompt        String?
+  rawResponse      String?
+  normalizedOutput String         // Serialized JSON of structured analysis
+  tokensUsed       Int            @default(0)
+  latencyMs        Int            @default(0)
+  status           String         @default("COMPLETED") // COMPLETED, FALLBACK, FAILED
+  validationResult String         @default("VALID")    // VALID, WARN, INVALID
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@map("ai_analyses")
+}
+
+// 6. Infrastructure Physical Assets
+model InfrastructureAsset {
+  id                   String                    @id @default(uuid())
+  assetCode            String                    @unique // AST-KA-RDS-004
+  name                 String
+  type                 String                    // Road, WaterNetwork, HealthCentre, School, Transformer, WasteFacility
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea        @relation(fields: [administrativeAreaId], references: [id])
+  locationId           String?
+  location             Location?                 @relation(fields: [locationId], references: [id])
+  conditionRating      String                    @default("FAIR") // EXCELLENT, GOOD, FAIR, POOR, CRITICAL
+  capacity             String?
+  serviceAreaRadiusKm  Float                     @default(2.0)
+  lastInspectedAt      DateTime?
+  sourceDataset        String                    @default("DEMO_BENCHMARK")
+  isDemo               Boolean                   @default(true)
+  conditions           InfrastructureCondition[]
+  priorityAssessments  PriorityAssessment[]
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  @@index([administrativeAreaId])
+  @@index([type])
+  @@map("infrastructure_assets")
+}
+
+// 7. Time-series Asset Conditions
+model InfrastructureCondition {
+  id             String              @id @default(uuid())
+  assetId        String
+  asset          InfrastructureAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  conditionScore Float               // 0.0 (Failed) to 100.0 (Optimal)
+  distressType   String?             // Potholes, PipeLeak, TransformerOverload
+  inspectionDate DateTime            @default(now())
+  notes          String?
+  inspectorName  String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@map("infrastructure_conditions")
+}
+
+// 8. Demographic Snapshots (Census / NFHS-5)
+model DemographicSnapshot {
+  id                   String             @id @default(uuid())
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea @relation(fields: [administrativeAreaId], references: [id])
+  year                 Int                @default(2026)
+  totalPopulation      Int
+  vulnerablePopulation Int
+  femalePercentage     Float
+  householdCount       Int
+  densityPerSqKm       Float
+  sourceDataset        String             @default("CENSUS_BENCHMARK")
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@map("demographic_snapshots")
+}
+
+// 9. Public Capital & Municipal Investments
+model PublicInvestment {
+  id                   String             @id @default(uuid())
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea @relation(fields: [administrativeAreaId], references: [id])
+  schemeName           String             // e.g., PMGSY, Jal Jeevan Mission, AMRUT 2.0
+  category             String
+  allocatedAmountInr   Float
+  spentAmountInr       Float
+  fiscalYear           String             // 2025-2026
+  status               String             @default("ONGOING") // APPROVED, ONGOING, COMPLETED, DELAYED
+  sourceDataset        String             @default("STATE_BUDGET_PORTAL")
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@map("public_investments")
+}
+
+// 10. Semantic Issue Clusters
+model IssueCluster {
+  id                   String             @id @default(uuid())
+  clusterCode          String             @unique // CLS-KA-WAT-01
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea @relation(fields: [administrativeAreaId], references: [id])
+  category             String
+  title                String
+  description          String
+  requestCount         Int                @default(1)
+  averageUrgency       Float              @default(50.0)
+  status               String             @default("ACTIVE") // ACTIVE, RESOLVED, MERGED
+  citizenRequests      CitizenRequest[]
+  hotspots             Hotspot[]
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@map("issue_clusters")
+}
+
+// 11. Geographic Emerging Hotspots (Risk Radar)
+model Hotspot {
+  id                       String               @id @default(uuid())
+  hotspotCode              String               @unique // HOT-KA-BLR-001
+  administrativeAreaId     String
+  administrativeArea       AdministrativeArea   @relation(fields: [administrativeAreaId], references: [id])
+  issueClusterId           String?
+  issueCluster             IssueCluster?        @relation(fields: [issueClusterId], references: [id])
+  category                 String
+  requestCount             Int                  @default(1)
+  trendGrowthPct           Float                @default(0.0)
+  affectedPopulationSignal Int                  @default(5000)
+  infrastructureGapScore   Float                @default(50.0) // 0 - 100
+  serviceCriticalityScore  Float                @default(50.0) // 0 - 100
+  vulnerabilityScore       Float                @default(50.0) // 0 - 100
+  investmentGapScore       Float                @default(50.0) // 0 - 100
+  prioritySignalScore      Float                @default(50.0) // 0 - 100
+  confidenceScore          Float                @default(0.85)
+  centerLat                Float
+  centerLng                Float
+  boundingBoxJson          String?              // Bounding box or polygon
+  status                   String               @default("EMERGING") // EMERGING, ELEVATED, MITIGATING, RESOLVED
+  priorityAssessments      PriorityAssessment[]
+  evidenceRecords          EvidenceRecord[]
+  recommendations          Recommendation[]
+  evidenceBriefs           EvidenceBrief[]
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  @@index([status])
+  @@index([category])
+  @@index([administrativeAreaId])
+  @@map("hotspots")
+}
+
+// 12. Explainable Priority Assessments
+model PriorityAssessment {
+  id                   String                       @id @default(uuid())
+  assessmentCode       String                       @unique // PA-2026-001
+  hotspotId            String?
+  hotspot              Hotspot?                     @relation(fields: [hotspotId], references: [id])
+  assetId              String?
+  asset                InfrastructureAsset?         @relation(fields: [assetId], references: [id])
+  administrativeAreaId String
+  administrativeArea   AdministrativeArea           @relation(fields: [administrativeAreaId], references: [id])
+  compositeScore       Float                        // 0 - 100
+  modelVersion         String                       @default("v1.0-deterministic")
+  calculatedAt         DateTime                     @default(now())
+  factorContributions  PriorityFactorContribution[]
+  scenarios            WhatIfScenario[]
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([hotspotId])
+  @@index([administrativeAreaId])
+  @@map("priority_assessments")
+}
+
+// 13. Granular Factor Contributions (Auditability)
+model PriorityFactorContribution {
+  id                   String             @id @default(uuid())
+  priorityAssessmentId String
+  priorityAssessment   PriorityAssessment @relation(fields: [priorityAssessmentId], references: [id], onDelete: Cascade)
+  factorKey            String             // request_volume, infrastructure_gap, vulnerability, etc.
+  factorLabel          String             // Infrastructure Gap (28%)
+  rawValue             Float
+  normalizedValue      Float              // 0 - 100
+  weight               Float              // e.g. 0.28
+  contributionPct      Float              // normalizedValue * weight
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@map("priority_factor_contributions")
+}
+
+// 14. What-If Scenario Simulations
+model WhatIfScenario {
+  id                          String             @id @default(uuid())
+  name                        String
+  description                 String?
+  baselinePriorityAssessmentId String
+  baselineAssessment          PriorityAssessment @relation(fields: [baselinePriorityAssessmentId], references: [id])
+  parameterOverridesJson      String             // JSON of modified assumptions
+  resultingScore              Float
+  scoreDelta                  Float
+  createdAt                   DateTime           @default(now())
+  updatedAt                   DateTime           @updatedAt
+
+  @@map("what_if_scenarios")
+}
+
+// 15. Verifiable Evidence Records
+model EvidenceRecord {
+  id             String    @id @default(uuid())
+  evidenceCode   String    @unique // e.g. EV-101, EV-104
+  hotspotId      String?
+  hotspot        Hotspot?  @relation(fields: [hotspotId], references: [id])
+  sourceEntity   String    // CITIZEN_SIGNAL, ASSET_INSPECTION, CENSUS_SURVEY, CAPITAL_BUDGET
+  entityId       String
+  metric         String    // "Pothole Density", "Tap Water Coverage %", "Piped Access Deficit"
+  value          String    // "68% damaged", "14,200 citizens affected"
+  period         String    // "Q1 2026"
+  sourceMetadata String    // JSON containing source citation
+  confidence     Float     @default(0.9)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([hotspotId])
+  @@index([sourceEntity])
+  @@map("evidence_records")
+}
+
+// 16. Actionable Infrastructure Recommendations
+model Recommendation {
+  id                       String          @id @default(uuid())
+  recommendationCode       String          @unique // REC-2026-004
+  hotspotId                String
+  hotspot                  Hotspot         @relation(fields: [hotspotId], references: [id])
+  title                    String
+  summary                  String
+  estimatedCostInr         Float           @default(0.0)
+  estimatedDurationMonths  Int             @default(6)
+  targetBeneficiaries      Int             @default(5000)
+  status                   String          @default("PROPOSED") // PROPOSED, APPROVED, UNDER_REVIEW, REJECTED
+  evidenceBriefs           EvidenceBrief[]
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+
+  @@map("recommendations")
+}
+
+// 17. Grounded Gemini Evidence Briefs
+model EvidenceBrief {
+  id                            String          @id @default(uuid())
+  hotspotId                     String
+  hotspot                       Hotspot         @relation(fields: [hotspotId], references: [id])
+  recommendationId              String?
+  recommendation                Recommendation? @relation(fields: [recommendationId], references: [id])
+  problemSummary                String
+  whyEmerging                   String
+  potentialIntervention         String
+  implementationConsiderations  String
+  risks                         String
+  dependencies                  String
+  dataLimitations               String
+  confidenceScore               Float           @default(0.88)
+  modelIdentifier               String          @default("gemini-2.0-flash")
+  requiresHumanReview           Boolean         @default(true)
+  citedEvidenceIds              String          // Comma-separated or JSON list of EV-xxx codes
+  createdAt                     DateTime        @default(now())
+  updatedAt                     DateTime        @updatedAt
+
+  @@map("evidence_briefs")
+}
+
+// 18. Human Analyst Reviews & Decision Governance
+model HumanReview {
+  id            String   @id @default(uuid())
+  targetType    String   // HOTSPOT, RECOMMENDATION, CLUSTER, AI_ANALYSIS
+  targetId      String
+  reviewerId    String
+  reviewer      User     @relation(fields: [reviewerId], references: [id])
+  action        String   // APPROVED, MODIFIED, REJECTED, DISPATCHED_INSPECTION
+  rationale     String
+  previousValue String?
+  newValue      String?
+  reviewedAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("human_reviews")
+}
+
+// 19. Tamper-evident Audit Events
+model AuditEvent {
+  id               String   @id @default(uuid())
+  eventType        String   // AI_EXTRACTION, HOTSPOT_DETECTED, PRIORITY_COMPUTED, SCENARIO_SIMULATED, HUMAN_OVERRIDE
+  sourceModule     String   // INGESTION, RADAR, PRIORITY_ENGINE, BRIEF_SYNTHESIS
+  modelIdentifier  String?
+  inputDigest      String?
+  outputDigest     String?
+  validationStatus String   @default("VALID")
+  latencyMs        Int      @default(0)
+  performedBy      String   @default("SYSTEM")
+  metadataJson     String?  // Additional context
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([eventType])
+  @@index([sourceModule])
+  @@index([createdAt])
+  @@map("audit_events")
+}
+
+// 20. Data Sources & Provenance Registry
+model DataSource {
+  id              String              @id @default(uuid())
+  code            String              @unique // DATA-MORTH, DATA-JJM, DATA-CENSUS
+  name            String
+  sourceAgency    String              // Ministry of Road Transport, Jal Jeevan Mission, Registrar General
+  sourceUrl       String
+  coverage        String              // Pan-India / Selected States
+  updateFrequency String              // Monthly, Quarterly, Decennial
+  license         String              // Open Government Data (OGD) Platform India
+  datasetType     String              @default("OFFICIAL_OPEN_DATA") // OFFICIAL_OPEN_DATA, SYNTHETIC_BENCHMARK, DEMO_SEED
+  description     String
+  ingestionRuns   DataIngestionRun[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@map("data_sources")
+}
+
+model DataIngestionRun {
+  id              String      @id @default(uuid())
+  dataSourceId    String
+  dataSource      DataSource  @relation(fields: [dataSourceId], references: [id])
+  recordsIngested Int         @default(0)
+  status          String      @default("SUCCESS") // SUCCESS, RUNNING, FAILED
+  errorMessage    String?
+  startedAt       DateTime    @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@map("data_ingestion_runs")
+}

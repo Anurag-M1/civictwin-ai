@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  civictwin-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: civictwin-ai-dpi
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=gemini-2.0-flash
+    volumes:
+      - civictwin_data:/app/prisma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  civictwin_data:
+    driver: local

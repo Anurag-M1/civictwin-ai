@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: civictwin-ai-deployment
+  namespace: default
+  labels:
+    app.kubernetes.io/name: civictwin-ai
+    app.kubernetes.io/part-of: digital-public-infrastructure
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: civictwin-ai
+  template:
+    metadata:
+      labels:
+        app: civictwin-ai
+    spec:
+      containers:
+        - name: civictwin-ai
+          image: civictwin-ai:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: civictwin-secrets
+                  key: database-url
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: civictwin-secrets
+                  key: gemini-api-key
+                  optional: true
+            - name: GEMINI_MODEL
+              value: "gemini-2.0-flash"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1536Mi"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: civictwin-ai-service
+  namespace: default
+  labels:
+    app: civictwin-ai
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3001
+      protocol: TCP
+      name: http
+  selector:
+    app: civictwin-ai
